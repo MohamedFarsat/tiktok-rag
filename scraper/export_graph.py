@@ -1,16 +1,26 @@
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 from .crawl import PageData
 
 
 def _sha1_id(*parts: str) -> str:
-    data = "|".join(parts).encode("utf-8")
-    return hashlib.sha1(data).hexdigest()
+    """
+    Streaming SHA1 to avoid building giant intermediate strings.
+    """
+    h = hashlib.sha1()
+    for i, p in enumerate(parts):
+        if i:
+            h.update(b"|")
+        h.update(p.encode("utf-8", errors="ignore"))
+    return h.hexdigest()
+
+
+def _text_sha1(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def _infer_locale(url: str) -> str:
@@ -23,69 +33,32 @@ def _infer_locale(url: str) -> str:
     return "unknown"
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _find_split_point(text: str, start: int, end: int) -> int:
-    length = len(text)
-    for i in range(end, start, -1):
-        if text[i - 1] in ".!?" and (i == length or text[i].isspace()):
-            return i
-    for i in range(end, start, -1):
-        if text[i - 1].isspace():
-            return i
-    for i in range(end, length):
-        if text[i].isspace():
-            return i
-    return length
-
-
-def _split_text(text: str, max_chars: int, overlap_chars: int) -> List[str]:
-    text = text.strip()
-    if not text or len(text) <= max_chars:
-        return [text] if text else []
-
-    parts = []
-    start = 0
-    length = len(text)
-
-    while start < length:
-        end = min(start + max_chars, length)
-        split_at = end if end == length else _find_split_point(text, start, end)
-        if split_at <= start:
-            split_at = end
-
-        part = text[start:split_at].strip()
-        if part:
-            parts.append(part)
-
-        if split_at >= length:
-            break
-
-        next_start = split_at - overlap_chars
-        if next_start < 0:
-            next_start = 0
-        while next_start > 0 and not text[next_start - 1].isspace():
-            next_start -= 1
-        if next_start >= split_at:
-            next_start = split_at
-        start = next_start
-
-    return parts
+def _load_jsonl(path: str) -> List[dict]:
+    items = []
+    if not os.path.exists(path):
+        return items
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return items
 
 
 def export_graph(
     pages: List[PageData],
     out_dir: str = "data",
-    max_chunk_chars: int = 3500,
-    overlap_chars: int = 300,
+    max_chunk_chars: int = 2800,
+    overlap_chars: int = 200,
     retrieved_at: Optional[str] = None,
+    log_progress: bool = False,
+    merge_existing: bool = True,
+    append: bool = False,
 ) -> Dict[str, int]:
-    if retrieved_at is None:
-        retrieved_at = _utc_now_iso()
-    source = "tiktok_community_guidelines"
-
     os.makedirs(out_dir, exist_ok=True)
     nodes_path = os.path.join(out_dir, "nodes.jsonl")
     edges_path = os.path.join(out_dir, "edges.jsonl")
@@ -96,22 +69,43 @@ def export_graph(
     nodes = []
     edges = []
 
+    if merge_existing and not append:
+        existing_nodes = _load_jsonl(nodes_path)
+        existing_edges = _load_jsonl(edges_path)
+        for node in existing_nodes:
+            node_id = node.get("id")
+            if not node_id or node_id in node_ids:
+                continue
+            nodes.append(node)
+            node_ids.add(node_id)
+        for edge in existing_edges:
+            edge_id = edge.get("id")
+            if not edge_id or edge_id in edge_ids:
+                continue
+            edges.append(edge)
+            edge_ids.add(edge_id)
+
     url_to_page_id = {}
     for page in pages:
         page_id = _sha1_id("PAGE", page.url)
         url_to_page_id[page.url] = page_id
 
-    for page in pages:
+    total_pages = len(pages)
+    chunk_count = 0
+
+    for pi, page in enumerate(pages, start=1):
+        if pi % 5 == 0 or pi == 1 or pi == total_pages:
+            print(f"[export] page {pi}/{total_pages}: {page.url}")
+
         page_id = url_to_page_id[page.url]
         locale = _infer_locale(page.url)
+
         page_node = {
             "id": page_id,
             "type": "PAGE",
             "url": page.url,
             "title": page.title,
             "locale": locale,
-            "source": source,
-            "retrieved_at": retrieved_at,
         }
         if page_id not in node_ids:
             nodes.append(page_node)
@@ -119,10 +113,11 @@ def export_graph(
 
         section_ids = {}
         prev_chunk_id = None
-        chunk_order = 0
+
         for chunk in page.chunks:
             heading = chunk["heading"]
             section_id = section_ids.get(heading)
+
             if section_id is None:
                 section_id = _sha1_id("SECTION", page.url, heading)
                 section_node = {
@@ -130,12 +125,11 @@ def export_graph(
                     "type": "SECTION",
                     "url": page.url,
                     "heading": heading,
-                    "source": source,
-                    "retrieved_at": retrieved_at,
                 }
                 if section_id not in node_ids:
                     nodes.append(section_node)
                     node_ids.add(section_id)
+
                 edge_id = _sha1_id("PAGE_CONTAINS_SECTION", page_id, section_id)
                 if edge_id not in edge_ids:
                     edges.append(
@@ -147,58 +141,55 @@ def export_graph(
                         }
                     )
                     edge_ids.add(edge_id)
+
                 section_ids[heading] = section_id
 
-            for part in _split_text(
-                chunk["text"], max_chars=max_chunk_chars, overlap_chars=overlap_chars
-            ):
-                chunk_id = _sha1_id(
-                    "CHUNK",
-                    page.url,
-                    heading,
-                    str(chunk_order),
-                    part,
+            # ✅ FAST chunk id: use a short hash of the text, not the text itself
+            text_hash = _text_sha1(chunk["text"])
+            chunk_id = _sha1_id("CHUNK", page.url, heading, str(chunk["order"]), text_hash)
+
+            chunk_node = {
+                "id": chunk_id,
+                "type": "CHUNK",
+                "url": page.url,
+                "heading": heading,
+                "order": chunk["order"],
+                "text": chunk["text"],
+            }
+            if chunk_id not in node_ids:
+                nodes.append(chunk_node)
+                node_ids.add(chunk_id)
+
+            edge_id = _sha1_id("SECTION_CONTAINS_CHUNK", section_id, chunk_id)
+            if edge_id not in edge_ids:
+                edges.append(
+                    {
+                        "id": edge_id,
+                        "type": "SECTION_CONTAINS_CHUNK",
+                        "source": section_id,
+                        "target": chunk_id,
+                    }
                 )
-                chunk_node = {
-                    "id": chunk_id,
-                    "type": "CHUNK",
-                    "url": page.url,
-                    "heading": heading,
-                    "order": chunk_order,
-                    "text": part,
-                    "page_title": page.title,
-                    "source": source,
-                    "retrieved_at": retrieved_at,
-                }
-                if chunk_id not in node_ids:
-                    nodes.append(chunk_node)
-                    node_ids.add(chunk_id)
-                edge_id = _sha1_id("SECTION_CONTAINS_CHUNK", section_id, chunk_id)
+                edge_ids.add(edge_id)
+
+            if prev_chunk_id:
+                edge_id = _sha1_id("NEXT_CHUNK", prev_chunk_id, chunk_id)
                 if edge_id not in edge_ids:
                     edges.append(
                         {
                             "id": edge_id,
-                            "type": "SECTION_CONTAINS_CHUNK",
-                            "source": section_id,
+                            "type": "NEXT_CHUNK",
+                            "source": prev_chunk_id,
                             "target": chunk_id,
                         }
                     )
                     edge_ids.add(edge_id)
 
-                if prev_chunk_id:
-                    edge_id = _sha1_id("NEXT_CHUNK", prev_chunk_id, chunk_id)
-                    if edge_id not in edge_ids:
-                        edges.append(
-                            {
-                                "id": edge_id,
-                                "type": "NEXT_CHUNK",
-                                "source": prev_chunk_id,
-                                "target": chunk_id,
-                            }
-                        )
-                        edge_ids.add(edge_id)
-                prev_chunk_id = chunk_id
-                chunk_order += 1
+            prev_chunk_id = chunk_id
+            chunk_count += 1
+
+            if chunk_count % 50 == 0:
+                print(f"[export] processed chunks: {chunk_count}")
 
     for page in pages:
         source_id = url_to_page_id.get(page.url)
@@ -218,12 +209,32 @@ def export_graph(
                 )
                 edge_ids.add(edge_id)
 
-    with open(nodes_path, "w", encoding="utf-8") as f:
+    # Faster output (and keeps unicode readable)
+    node_mode = "a" if append else "w"
+    edge_mode = "a" if append else "w"
+
+    with open(nodes_path, node_mode, encoding="utf-8") as f:
         for node in nodes:
-            f.write(json.dumps(node, ensure_ascii=True) + "\n")
+            f.write(json.dumps(node, ensure_ascii=False) + "\n")
 
-    with open(edges_path, "w", encoding="utf-8") as f:
+    with open(edges_path, edge_mode, encoding="utf-8") as f:
         for edge in edges:
-            f.write(json.dumps(edge, ensure_ascii=True) + "\n")
+            f.write(json.dumps(edge, ensure_ascii=False) + "\n")
 
-    return {"nodes": len(nodes), "edges": len(edges)}
+    node_types: Dict[str, int] = {}
+    for node in nodes:
+        node_type = node.get("type", "UNKNOWN")
+        node_types[node_type] = node_types.get(node_type, 0) + 1
+
+    edge_types: Dict[str, int] = {}
+    for edge in edges:
+        edge_type = edge.get("type", "UNKNOWN")
+        edge_types[edge_type] = edge_types.get(edge_type, 0) + 1
+
+    print(f"[export] done. nodes={len(nodes)} edges={len(edges)}")
+    return {
+        "nodes": len(nodes),
+        "edges": len(edges),
+        "node_types": node_types,
+        "edge_types": edge_types,
+    }

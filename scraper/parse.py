@@ -5,8 +5,8 @@ from bs4 import BeautifulSoup
 
 
 def _extract_chunks(soup: BeautifulSoup) -> List[dict]:
-    body = soup.body or soup
-    elements = body.find_all(["h1", "h2", "h3", "p", "li"], recursive=True)
+    root = soup.find("main") or soup.body or soup
+    elements = root.find_all(["h1", "h2", "h3", "p", "li"], recursive=True)
     sections = []
     current_heading = None
 

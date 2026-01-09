@@ -24,14 +24,15 @@ class PoliteFetcher:
     def __init__(
         self,
         cache_dir: str = ".cache",
-        user_agent: str = "TiktokGuidelinesCrawler/1.0",
+        user_agent: str = "CommunityGuidelinesCrawler/1.0",
         min_delay: float = 1.0,
         max_delay: float = 3.0,
         retries: int = 3,
         backoff_factor: float = 1.0,
-        timeout: float = 20.0,
+        timeout: Optional[float] = 20.0,
     ) -> None:
         self.cache_dir = cache_dir
+        self.user_agent = user_agent
         self.min_delay = min_delay
         self.max_delay = max_delay
         self.retries = retries
@@ -107,6 +108,28 @@ class PoliteFetcher:
                     allow_redirects=True,
                 )
                 status = response.status_code
+                if status == 429:
+                    if cached:
+                        return FetchResult(
+                            url=url,
+                            final_url=cached.get("final_url", url),
+                            status_code=status,
+                            content=cached.get("content"),
+                            headers=cached.get("headers", {}),
+                            from_cache=True,
+                            error=None,
+                        )
+                    retry_after = response.headers.get("Retry-After")
+                    wait = None
+                    if retry_after:
+                        try:
+                            wait = float(retry_after)
+                        except ValueError:
+                            wait = None
+                    if wait is None:
+                        wait = self.backoff_factor * (2 ** attempt)
+                    time.sleep(wait + random.uniform(0, 0.5))
+                    continue
                 if status == 304 and cached:
                     return FetchResult(
                         url=url,
@@ -117,7 +140,7 @@ class PoliteFetcher:
                         from_cache=True,
                         error=None,
                     )
-                if status >= 500 or status == 429:
+                if status >= 500:
                     raise requests.RequestException(f"retryable status {status}")
 
                 content = response.text if response.text is not None else ""
