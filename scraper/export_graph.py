@@ -23,6 +23,36 @@ def _text_sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
+def _split_text(text: str, max_chars: int, overlap_chars: int) -> List[str]:
+    if max_chars <= 0:
+        return [text]
+    if len(text) <= max_chars:
+        return [text]
+    overlap = max(0, min(overlap_chars, max_chars - 1))
+    parts = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        parts.append(text[start:end])
+        if end >= len(text):
+            break
+        start = end - overlap
+    return parts
+
+
+def _split_chunks(
+    chunks: List[dict], max_chunk_chars: int, overlap_chars: int
+) -> List[dict]:
+    split_chunks = []
+    order = 0
+    for chunk in chunks:
+        heading = chunk["heading"]
+        for text in _split_text(chunk["text"], max_chunk_chars, overlap_chars):
+            split_chunks.append({"heading": heading, "order": order, "text": text})
+            order += 1
+    return split_chunks
+
+
 def _infer_locale(url: str) -> str:
     path = urlparse(url).path or ""
     prefix = "/community-guidelines/"
@@ -106,7 +136,12 @@ def export_graph(
             "url": page.url,
             "title": page.title,
             "locale": locale,
+            "source": page.source,
         }
+        if retrieved_at:
+            page_node["retrieved_at"] = retrieved_at
+        if page.platforms is not None:
+            page_node["platforms"] = page.platforms
         if page_id not in node_ids:
             nodes.append(page_node)
             node_ids.add(page_id)
@@ -114,7 +149,8 @@ def export_graph(
         section_ids = {}
         prev_chunk_id = None
 
-        for chunk in page.chunks:
+        page_chunks = _split_chunks(page.chunks, max_chunk_chars, overlap_chars)
+        for chunk in page_chunks:
             heading = chunk["heading"]
             section_id = section_ids.get(heading)
 
@@ -125,7 +161,12 @@ def export_graph(
                     "type": "SECTION",
                     "url": page.url,
                     "heading": heading,
+                    "source": page.source,
                 }
+                if retrieved_at:
+                    section_node["retrieved_at"] = retrieved_at
+                if page.platforms is not None:
+                    section_node["platforms"] = page.platforms
                 if section_id not in node_ids:
                     nodes.append(section_node)
                     node_ids.add(section_id)
@@ -144,7 +185,7 @@ def export_graph(
 
                 section_ids[heading] = section_id
 
-            # ✅ FAST chunk id: use a short hash of the text, not the text itself
+            # Fast chunk id: use a short hash of the text, not the text itself
             text_hash = _text_sha1(chunk["text"])
             chunk_id = _sha1_id("CHUNK", page.url, heading, str(chunk["order"]), text_hash)
 
@@ -155,7 +196,13 @@ def export_graph(
                 "heading": heading,
                 "order": chunk["order"],
                 "text": chunk["text"],
+                "page_title": page.title,
+                "source": page.source,
             }
+            if retrieved_at:
+                chunk_node["retrieved_at"] = retrieved_at
+            if page.platforms is not None:
+                chunk_node["platforms"] = page.platforms
             if chunk_id not in node_ids:
                 nodes.append(chunk_node)
                 node_ids.add(chunk_id)

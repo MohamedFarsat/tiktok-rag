@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import re
 import time
 from typing import List, Optional, Sequence
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from .fetch import PoliteFetcher
 from .parse import parse_html
@@ -28,7 +28,7 @@ class CrawlResult:
     skipped_robots: List[str] = field(default_factory=list)
 
 
-def normalize_url(url: str) -> str:
+def normalize_url(url: str, keep_query_params: Optional[Sequence[str]] = None) -> str:
     parsed = urlparse(url)
     scheme = "https"
     netloc = parsed.netloc.lower()
@@ -36,12 +36,106 @@ def normalize_url(url: str) -> str:
     path = re.sub(r"/{2,}", "/", path)
     if path != "/" and path.endswith("/"):
         path = path.rstrip("/")
-    return urlunparse((scheme, netloc, path, "", "", ""))
+    query = ""
+    if keep_query_params:
+        params = [
+            (k, v)
+            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+            if k in keep_query_params
+        ]
+        if params:
+            query = urlencode(params, doseq=True)
+    return urlunparse((scheme, netloc, path, "", query, ""))
+
+
+def _extract_query_defaults(
+    url: str, keep_query_params: Optional[Sequence[str]]
+) -> dict:
+    if not keep_query_params:
+        return {}
+    defaults = {}
+    for key, value in parse_qsl(urlparse(url).query, keep_blank_values=True):
+        if key in keep_query_params and key not in defaults:
+            defaults[key] = value
+    return defaults
+
+
+def _apply_default_query_params(url: str, defaults: dict) -> str:
+    if not defaults:
+        return url
+    parsed = urlparse(url)
+    existing = parse_qsl(parsed.query, keep_blank_values=True)
+    existing_keys = {k for k, _ in existing}
+    updated = list(existing)
+    for key, value in defaults.items():
+        if key not in existing_keys:
+            updated.append((key, value))
+    if updated == existing:
+        return url
+    query = urlencode(updated, doseq=True)
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, query, parsed.fragment)
+    )
 
 
 def _is_target_path(url: str, prefixes: Sequence[str]) -> bool:
     path = urlparse(url).path or "/"
     return any(path.startswith(prefix) for prefix in prefixes)
+
+
+def is_youtube_policy_page(page_title: str, h1: str, url: str) -> bool:
+    text = f"{page_title} {h1} {url}".lower()
+    reject_keywords = [
+        "how to",
+        "fix",
+        "troubleshoot",
+        "account",
+        "payments",
+        "billing",
+        "premium",
+        "creator support",
+        "contact",
+        "report a problem",
+        "appeal",
+        "status",
+        "features",
+        "watch history",
+        "comment settings",
+        "upload issues",
+        "channel settings",
+    ]
+    for keyword in reject_keywords:
+        if keyword in text:
+            return False
+
+    allow_keywords = [
+        "community guidelines",
+        "violence",
+        "violent",
+        "dangerous",
+        "hate",
+        "harassment",
+        "sensitive",
+        "misinformation",
+        "child safety",
+        "children",
+        "spam",
+        "scam",
+        "deceptive",
+        "regulated",
+        "drugs",
+        "weapons",
+        "firearms",
+        "nudity",
+        "sexual",
+        "suicide",
+        "self-harm",
+        "extremism",
+        "terror",
+        "threat",
+        "incitement",
+    ]
+    return any(keyword in text for keyword in allow_keywords)
 
 
 def crawl(
@@ -53,6 +147,8 @@ def crawl(
     robots: Optional[RobotsCheck] = None,
     source: str = "tiktok_community_guidelines",
     platforms: Optional[List[str]] = None,
+    keep_query_params: Optional[Sequence[str]] = None,
+    youtube_max_depth: int = 2,
     progress_every: int = 10,
     log_requests: bool = False,
 ) -> CrawlResult:
@@ -67,18 +163,26 @@ def crawl(
             )
 
     origin = urlunparse(("https", urlparse(start_url).netloc, "", "", "", ""))
+    default_query_params = _extract_query_defaults(start_url, keep_query_params)
+    normalized_start = normalize_url(
+        _apply_default_query_params(start_url, default_query_params),
+        keep_query_params=keep_query_params,
+    )
 
-    queue = deque([normalize_url(start_url)])
+    depth_limit = youtube_max_depth if source == "youtube_community_guidelines" else None
+    queue = deque([(normalized_start, 0)])
     seen = set()
-    queued = {normalize_url(start_url)}
+    queued = {normalized_start}
     skipped_robots = set()
     pages: List[PageData] = []
 
     while queue and len(pages) < max_pages:
-        url = queue.popleft()
+        url, depth = queue.popleft()
         if url in seen:
             continue
         seen.add(url)
+        if depth_limit is not None and depth > depth_limit:
+            continue
 
         if not _is_target_path(url, allowed_prefixes):
             continue
@@ -101,12 +205,21 @@ def crawl(
         if not result.content:
             continue
 
-        final_url = normalize_url(result.final_url)
-        title, chunks, out_links = parse_html(result.content, final_url)
+        final_url = normalize_url(
+            _apply_default_query_params(result.final_url, default_query_params),
+            keep_query_params=keep_query_params,
+        )
+        title, h1, chunks, out_links = parse_html(result.content, final_url)
+        if source == "youtube_community_guidelines":
+            if not is_youtube_policy_page(title, h1, final_url):
+                continue
 
         normalized_links = []
         for link in out_links:
-            n = normalize_url(link)
+            n = normalize_url(
+                _apply_default_query_params(link, default_query_params),
+                keep_query_params=keep_query_params,
+            )
             if n not in normalized_links:
                 normalized_links.append(n)
             if (
@@ -115,10 +228,12 @@ def crawl(
                 and _is_target_path(n, allowed_prefixes)
                 and rules.is_allowed_url(n, origin)
             ):
+                if depth_limit is not None and depth + 1 > depth_limit:
+                    continue
                 if robots and not robots.can_fetch(n):
                     skipped_robots.add(n)
                 else:
-                    queue.append(n)
+                    queue.append((n, depth + 1))
                     queued.add(n)
 
         pages.append(

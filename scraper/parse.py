@@ -4,6 +4,13 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 
+def _extract_h1(soup: BeautifulSoup) -> str:
+    h1 = soup.find("h1")
+    if not h1:
+        return ""
+    return h1.get_text(" ", strip=True)
+
+
 def _extract_chunks(soup: BeautifulSoup) -> List[dict]:
     root = soup.find("main") or soup.body or soup
     elements = root.find_all(["h1", "h2", "h3", "p", "li"], recursive=True)
@@ -38,12 +45,13 @@ def _extract_chunks(soup: BeautifulSoup) -> List[dict]:
     return chunks
 
 
-def parse_html(html: str, base_url: str) -> Tuple[str, List[dict], List[str]]:
+def parse_html(html: str, base_url: str) -> Tuple[str, str, List[dict], List[str]]:
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
     title = soup.title.get_text(strip=True) if soup.title else ""
+    h1 = _extract_h1(soup)
 
     out_links = []
     for a in soup.find_all("a", href=True):
@@ -62,4 +70,4 @@ def parse_html(html: str, base_url: str) -> Tuple[str, List[dict], List[str]]:
             seen.add(link)
 
     chunks = _extract_chunks(soup)
-    return title, chunks, unique_links
+    return title, h1, chunks, unique_links

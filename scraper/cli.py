@@ -11,6 +11,7 @@ from .robots_rules import default_tiktok_rules
 
 DEFAULT_TIKTOK_START = "https://www.tiktok.com/community-guidelines/en"
 DEFAULT_META_START = "https://transparency.meta.com/policies/community-standards/"
+DEFAULT_YOUTUBE_START = "https://support.google.com/youtube/answer/9288567?hl=en-GB"
 
 
 def main() -> None:
@@ -18,6 +19,12 @@ def main() -> None:
     parser.add_argument("--start", default=None, help="Start URL for a single source")
     parser.add_argument("--out", default="data", help="Output directory")
     parser.add_argument("--max-pages", type=int, default=300, help="Max pages to crawl")
+    parser.add_argument(
+        "--youtube-max-depth",
+        type=int,
+        default=2,
+        help="Max crawl depth for YouTube policy pages",
+    )
     parser.add_argument(
         "--max-chunk-chars",
         type=int,
@@ -72,7 +79,7 @@ def main() -> None:
         "--sources",
         nargs="+",
         default=None,
-        help="Sources to crawl: tiktok meta",
+        help="Sources to crawl: tiktok meta youtube",
     )
     parser.add_argument("--source", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -112,6 +119,7 @@ def main() -> None:
                 rules=default_tiktok_rules(),
                 fetcher=fetcher,
                 source="tiktok_community_guidelines",
+                platforms=["tiktok"],
                 progress_every=args.progress_every,
                 log_requests=args.log_requests,
             )
@@ -128,6 +136,22 @@ def main() -> None:
                 robots=robots,
                 source="meta_community_standards",
                 platforms=["instagram", "facebook"],
+                progress_every=args.progress_every,
+                log_requests=args.log_requests,
+            )
+        elif source_key == "youtube":
+            print(f"Starting crawl: {source_key}")
+            start_url = args.start or DEFAULT_YOUTUBE_START
+            result = crawl(
+                start_url,
+                max_pages=args.max_pages,
+                allowed_prefixes=["/youtube/answer/"],
+                rules=None,
+                fetcher=fetcher,
+                source="youtube_community_guidelines",
+                platforms=["youtube"],
+                keep_query_params={"hl"},
+                youtube_max_depth=args.youtube_max_depth,
                 progress_every=args.progress_every,
                 log_requests=args.log_requests,
             )
