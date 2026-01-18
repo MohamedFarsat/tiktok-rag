@@ -3,5 +3,7 @@
 __pycache__/
 *.pyc
 .chroma/
+.next/
+node_modules/
 data/*.jsonl
 !data/.gitkeep

@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: "Fraunces", serif;
+  --font-body: "Work Sans", sans-serif;
+}
+
+html {
+  font-family: var(--font-body);
+  color: #1f2430;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
