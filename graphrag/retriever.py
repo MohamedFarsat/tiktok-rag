@@ -1,4 +1,5 @@
 from typing import Dict, List, Optional
+import re
 
 from .chroma_store import ChromaStore
 from .graph_loader import Graph
@@ -6,11 +7,36 @@ from .rerank import maybe_create_reranker
 from .url_utils import canonicalize_url
 
 
-def _make_snippet(text: str, max_len: int = 320) -> str:
-    text = " ".join(text.split())
-    if len(text) <= max_len:
+def _make_snippet(
+    text: str, sentence_limit: int = 2, soft_max_chars: int = 600
+) -> str:
+    text = " ".join(str(text).split())
+    if not text:
+        return ""
+    sentences = _split_sentences(text)
+    if not sentences:
         return text
-    return text[: max_len - 3].rstrip() + "..."
+    picked: List[str] = []
+    for sentence in sentences:
+        cleaned = sentence.strip()
+        if not cleaned:
+            continue
+        picked.append(cleaned)
+        if len(picked) >= sentence_limit:
+            break
+    if not picked:
+        return text
+    snippet = " ".join(picked)
+    if len(snippet) > soft_max_chars and len(picked) > 1:
+        snippet = picked[0]
+    return snippet
+
+
+def _split_sentences(text: str) -> List[str]:
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p for p in parts if p]
 
 
 def _parse_platforms(value) -> List[str]:

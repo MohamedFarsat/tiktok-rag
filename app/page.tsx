@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PlatformSelector } from "../components/PlatformSelector";
 import { AnswerCard } from "../components/AnswerCard";
 import { Textarea } from "../components/ui/textarea";
 import { Button } from "../components/ui/button";
-import { Checkbox } from "../components/ui/checkbox";
+import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { queryGraphRag } from "../lib/api";
+import { cn } from "../lib/utils";
 import type { PlatformKey, QueryResponse } from "../lib/types";
 
 const DEFAULT_PLATFORMS: PlatformKey[] = ["tiktok", "youtube"];
@@ -17,9 +18,44 @@ export default function HomePage() {
   const [result, setResult] = useState<QueryResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [useLlm, setUseLlm] = useState(true);
+  const {
+    isSupported: isSpeechSupported,
+    isListening,
+    transcript,
+    interimTranscript,
+    error: speechError,
+    start,
+    stop,
+    reset: resetSpeech
+  } = useSpeechRecognition();
 
+  const latestTranscriptRef = useRef("");
+  const wasListeningRef = useRef(false);
   const canSubmit = question.trim().length > 0 && platforms.length > 0 && !isLoading;
+
+  useEffect(() => {
+    latestTranscriptRef.current = transcript;
+  }, [transcript]);
+
+  useEffect(() => {
+    if (wasListeningRef.current && !isListening) {
+      const finalTranscript = latestTranscriptRef.current.trim();
+      if (finalTranscript) {
+        setQuestion((prev) => {
+          const trimmedPrev = prev.trim();
+          if (!trimmedPrev) {
+            return finalTranscript;
+          }
+
+          return `${trimmedPrev} ${finalTranscript}`.trim();
+        });
+      }
+
+      resetSpeech();
+    }
+
+    wasListeningRef.current = isListening;
+  }, [isListening, resetSpeech]);
 
   const handleSubmit = async () => {
     if (!canSubmit) {
@@ -32,8 +68,7 @@ export default function HomePage() {
     try {
       const response = await queryGraphRag({
         question: question.trim(),
-        platforms,
-        use_llm: useLlm
+        platforms
       });
       setResult(response);
     } catch (error) {
@@ -70,12 +105,44 @@ export default function HomePage() {
           </div>
 
           <div className="space-y-2">
-            <p className="text-xs uppercase tracking-[0.3em] text-muted">Question</p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs uppercase tracking-[0.3em] text-muted">Question</p>
+              <Button
+                type="button"
+                onClick={isListening ? stop : start}
+                disabled={!isSpeechSupported}
+                aria-pressed={isListening}
+                aria-label={isListening ? "Stop voice input" : "Start voice input"}
+                className={cn(
+                  "h-9 w-9 p-0",
+                  isListening
+                    ? "border-accent bg-accent text-white"
+                    : "border-ink bg-ink text-white",
+                  !isSpeechSupported && "cursor-not-allowed opacity-60"
+                )}
+              >
+                {isListening ? <MicOffIcon className="h-4 w-4" /> : <MicIcon className="h-4 w-4" />}
+              </Button>
+            </div>
             <Textarea
               placeholder="Ask a question about what content is allowed..."
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
             />
+            <div className="min-h-[20px] text-xs text-muted">
+              {isListening ? (
+                <span className="text-accent">Listening…</span>
+              ) : null}
+              {isListening && interimTranscript ? (
+                <span className="ml-2 text-ink">{interimTranscript}</span>
+              ) : null}
+              {!isSpeechSupported ? (
+                <span>Voice input is supported in Chrome/Edge.</span>
+              ) : null}
+              {isSpeechSupported && speechError ? (
+                <span className="text-accent">{speechError}</span>
+              ) : null}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -89,13 +156,6 @@ export default function HomePage() {
                 "Ask"
               )}
             </Button>
-            <label className="flex items-center gap-2 text-sm text-muted">
-              <Checkbox
-                checked={useLlm}
-                onCheckedChange={(checked) => setUseLlm(checked === true)}
-              />
-              Use LLM
-            </label>
             {errorMessage ? (
               <p className="text-sm text-accent">{errorMessage}</p>
             ) : null}
@@ -126,3 +186,45 @@ export default function HomePage() {
     </main>
   );
 }
+
+type IconProps = {
+  className?: string;
+};
+
+const MicIcon = ({ className }: IconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+  >
+    <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+    <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+    <path d="M12 18v4" />
+    <path d="M8 22h8" />
+  </svg>
+);
+
+const MicOffIcon = ({ className }: IconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+  >
+    <path d="M9 9v2a3 3 0 0 0 4.12 2.82" />
+    <path d="M15 9V5a3 3 0 0 0-5.91-1.1" />
+    <path d="M19 10v1a7 7 0 0 1-9.1 6.7" />
+    <path d="M12 18v4" />
+    <path d="M8 22h8" />
+    <path d="M2 2l20 20" />
+  </svg>
+);

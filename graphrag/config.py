@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 
 def _env_flag(name: str) -> bool:
@@ -23,9 +24,30 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        project_root = Path(__file__).resolve().parents[1]
+        data_dir = project_root / "data"
+        default_nodes = data_dir / "nodes.jsonl"
+        default_edges = data_dir / "edges.jsonl"
+
+        env_nodes = os.getenv("GRAPHRAG_NODES")
+        env_edges = os.getenv("GRAPHRAG_EDGES")
+        if env_nodes:
+            nodes_path = Path(env_nodes)
+            if not nodes_path.is_absolute():
+                nodes_path = project_root / nodes_path
+        else:
+            nodes_path = default_nodes
+
+        if env_edges:
+            edges_path = Path(env_edges)
+            if not edges_path.is_absolute():
+                edges_path = project_root / edges_path
+        else:
+            edges_path = default_edges
+
         return cls(
-            nodes_path=os.getenv("GRAPHRAG_NODES", cls.nodes_path),
-            edges_path=os.getenv("GRAPHRAG_EDGES", cls.edges_path),
+            nodes_path=str(nodes_path),
+            edges_path=str(edges_path),
             chroma_dir=os.getenv("GRAPHRAG_CHROMA_DIR", cls.chroma_dir),
             collection_name=os.getenv("GRAPHRAG_COLLECTION", cls.collection_name),
             embed_model=os.getenv("GRAPHRAG_EMBED_MODEL", cls.embed_model),

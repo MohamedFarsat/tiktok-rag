@@ -4,9 +4,9 @@ const API_URL = "http://127.0.0.1:8000/query";
 
 export async function queryGraphRag(payload: QueryRequest): Promise<QueryResponse> {
   const finalPayload = {
+    ...payload,
     use_llm: true,
-    llm_model: "qwen2.5:3b-instruct",
-    ...payload
+    llm_model: "qwen2.5:3b-instruct"
   };
   const response = await fetch(API_URL, {
     method: "POST",

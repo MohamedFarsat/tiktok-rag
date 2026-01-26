@@ -49,7 +49,6 @@ def format_response(
     platforms: Dict[str, Dict] = {}
     requested_model = _normalize_field(llm_model) or DEFAULT_LLM_MODEL
     llm_client = OllamaClient() if use_llm else None
-    allow_fallback = requested_model == DEFAULT_LLM_MODEL
     for platform, evidence in (grouped_evidence or {}).items():
         platform_key = str(platform).lower()
         if platform_key not in ALLOWED_PLATFORMS:
@@ -65,7 +64,6 @@ def format_response(
                 evidence,
                 llm_client,
                 requested_model,
-                allow_fallback,
             )
         if not answer:
             answer = _build_answer(platform_key, evidence, citations)
@@ -199,7 +197,6 @@ def _build_llm_answer(
     evidence: List[Dict],
     client: OllamaClient,
     model_name: str,
-    allow_fallback: bool,
 ) -> Optional[str]:
     available_models: Optional[Set[str]] = None
     try:
@@ -212,17 +209,14 @@ def _build_llm_answer(
     inferred = infer_verdict_from_evidence(snippets)
     print(f"[graphrag] LLM inferred verdict: {inferred}")
     requested = model_name.strip()
-    model_candidates = [requested]
-    if available_models:
-        requested_lower = requested.lower()
-        if requested_lower not in available_models:
-            if FALLBACK_LLM_MODEL in available_models:
-                model_candidates = [FALLBACK_LLM_MODEL]
-            else:
-                model_candidates = [requested]
-    if allow_fallback and model_candidates[-1] != FALLBACK_LLM_MODEL:
-        model_candidates.append(FALLBACK_LLM_MODEL)
+    model_candidates: List[str] = []
+    for candidate in (requested, DEFAULT_LLM_MODEL, FALLBACK_LLM_MODEL):
+        if candidate and candidate not in model_candidates:
+            model_candidates.append(candidate)
     for candidate in model_candidates:
+        if available_models and candidate.lower() not in available_models:
+            print(f"[graphrag] LLM model not available: {candidate}")
+            continue
         try:
             print(f"[graphrag] LLM request platform={platform} model={candidate}")
             response = client.generate(
@@ -233,7 +227,7 @@ def _build_llm_answer(
             continue
         except (OllamaError, TimeoutError):
             print(f"[graphrag] LLM request failed for model: {candidate}")
-            return None
+            continue
         cleaned = normalize_text(response.strip())
         preview = cleaned.replace("\n", " ")[:200]
         print(f"[graphrag] LLM response preview: {preview}")
